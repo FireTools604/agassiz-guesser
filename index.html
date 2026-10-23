@@ -133,17 +133,10 @@ const CONFIG = {
   ALLOW_MOVE: true,                 // false = no moving (look around only)
   MAX_POINTS: 5000,                 // per round
   PERFECT_RADIUS_M: 25,             // within this = full points
-  SNAP_RADIUS_M: 300,               // how far from a random point to search for Street View
+  SNAP_RADIUS_M: 75,                // random points sit on roads, so Street View is close if it exists
   MIN_SPACING_M: 800,               // rounds in one game must be at least this far apart
-  MAX_TRIES: 80,
-  // PLACEHOLDER play area: a rough box around the Agassiz valley floor.
-  // Replace with the District of Kent boundary as [lat, lng] pairs.
-  AREA: [
-    [49.285, -121.860],
-    [49.285, -121.700],
-    [49.215, -121.700],
-    [49.215, -121.860]
-  ]
+  MAX_TRIES: 40,
+  AREA_URL: "area.json"             // District of Kent minus excluded areas + roads (built by tools/build_area.py)
 };
 
 /* ================== GEO HELPERS ================== */
@@ -161,15 +154,41 @@ function inPolygon(pt, poly){
   }
   return inside;
 }
-const lats = CONFIG.AREA.map(p => p[0]), lngs = CONFIG.AREA.map(p => p[1]);
-const BBOX = { s: Math.min(...lats), n: Math.max(...lats), w: Math.min(...lngs), e: Math.max(...lngs) };
-const DIAG_M = distM([BBOX.s, BBOX.w], [BBOX.n, BBOX.e]);
+// AREA.outline: [[ring, hole, ...], ...] in [lat, lng]. Holes are the excluded areas.
+let AREA = null, ROADS = null, DIAG_M = 1;
+function inArea(pt){
+  return AREA.outline.some(([ring, ...holes]) => inPolygon(pt, ring) && !holes.some(h => inPolygon(pt, h)));
+}
+// Road sampling: pick a road line weighted by length x class weight, then a uniform point along it.
+// Keeps rounds off roadless mountain terrain, so almost every Street View lookup succeeds.
+function prepRoads(area){
+  const segs = [];               // [a, b, cumulativeWeight]
+  let total = 0;
+  area.roads.forEach((line, i) => {
+    const w = area.weights[i] ?? 1;
+    for (let k = 1; k < line.length; k++){
+      total += distM(line[k-1], line[k]) * w;
+      segs.push([line[k-1], line[k], total]);
+    }
+  });
+  return { segs, total };
+}
 function randomPoint(){
-  for (let i = 0; i < 1000; i++){
-    const p = [BBOX.s + Math.random()*(BBOX.n-BBOX.s), BBOX.w + Math.random()*(BBOX.e-BBOX.w)];
-    if (inPolygon(p, CONFIG.AREA)) return p;
-  }
-  throw new Error("Play area polygon looks invalid.");
+  const { segs, total } = ROADS, t = Math.random() * total;
+  let lo = 0, hi = segs.length - 1;
+  while (lo < hi){ const mid = (lo + hi) >> 1; if (segs[mid][2] < t) lo = mid + 1; else hi = mid; }
+  const [a, b] = segs[lo], f = Math.random();
+  return [a[0] + f*(b[0]-a[0]), a[1] + f*(b[1]-a[1])];
+}
+async function loadArea(){
+  const res = await fetch(CONFIG.AREA_URL, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`Couldn't load the play area (${res.status}).`);
+  AREA = await res.json();
+  ROADS = prepRoads(AREA);
+  if (!ROADS.total) throw new Error("Play area has no roads to sample from.");
+  // Score scale = diagonal of the road network, not the whole District, so mountain extent doesn't flatten scores
+  const pts = AREA.roads.flat(), la = pts.map(p => p[0]), ln = pts.map(p => p[1]);
+  DIAG_M = distM([Math.min(...la), Math.min(...ln)], [Math.max(...la), Math.max(...ln)]);
 }
 function scoreFor(d){
   if (d <= CONFIG.PERFECT_RADIUS_M) return CONFIG.MAX_POINTS;
@@ -194,12 +213,17 @@ window.gm_authFailure = () => {
   loading(false); show("start");
   startError("Google rejected the API key. Check that the Maps JavaScript API is enabled, billing is on, and this site is allowed in the key's restrictions.");
 };
+let googleReady = false, areaReady = false;
+function readyCheck(){
+  if (!googleReady || !areaReady || $("start-error").classList.contains("show")) return;
+  $("play-btn").disabled = false;
+  $("play-btn").textContent = "Play";
+}
 window.initGoogle = async () => {
   try {
     SV = await google.maps.importLibrary("streetView");
     svService = new SV.StreetViewService();
-    $("play-btn").disabled = false;
-    $("play-btn").textContent = "Play";
+    googleReady = true; readyCheck();
   } catch (e) { startError("Google Maps loaded but Street View didn't. Try reloading."); }
 };
 (function loadGoogle(){
@@ -217,12 +241,11 @@ window.initGoogle = async () => {
 /* ================== LEAFLET MAPS ================== */
 const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const TILE_OPTS = { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" };
-const areaBounds = L.latLngBounds(CONFIG.AREA);
 const areaStyle = { color: "#e8a33d", weight: 1.5, dashArray: "4 6", fill: false, interactive: false };
+let areaBounds = L.latLngBounds([[49.215, -121.86], [49.285, -121.70]]);   // valley floor until area.json loads
 function makeMap(id){
   const m = L.map(id, { zoomControl: true });
   L.tileLayer(TILE_URL, TILE_OPTS).addTo(m);
-  L.polygon(CONFIG.AREA, areaStyle).addTo(m);
   m.fitBounds(areaBounds, { padding: [10, 10] });
   return m;
 }
@@ -232,6 +255,14 @@ const finalMap = makeMap("final-map");
 const resultLayer = L.layerGroup().addTo(resultMap);
 const finalLayer = L.layerGroup().addTo(finalMap);
 let guessMarker = null;
+
+loadArea().then(() => {
+  [guessMap, resultMap, finalMap].forEach(m => L.polygon(AREA.outline, areaStyle).addTo(m));
+  // Open the guess map on the roaded part of the District; the mountains stay reachable by zooming out
+  areaBounds = L.latLngBounds(AREA.roads.flat());
+  guessMap.fitBounds(areaBounds, { padding: [10, 10] });
+  areaReady = true; readyCheck();
+}).catch(e => startError(e.message));
 
 const pin = color => ({ radius: 8, color: "#10140f", weight: 2, fillColor: color, fillOpacity: 1 });
 const GUESS_COLOR = "#e8a33d", ACTUAL_COLOR = "#7fc46b";
@@ -262,7 +293,7 @@ async function findLocation(){
         preference: SV.StreetViewPreference.NEAREST
       });
       const ll = data.location.latLng, actual = [ll.lat(), ll.lng()];
-      if (!inPolygon(actual, CONFIG.AREA)) continue;
+      if (!inArea(actual)) continue;
       if (rounds.some(r => distM(r.actual, actual) < CONFIG.MIN_SPACING_M)) continue;
       return { panoId: data.location.pano, actual };
     } catch (e) { /* no Street View near this point — try again */ }
