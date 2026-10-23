@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agassiz Guesser</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#10140f; --panel:rgba(22,27,21,.88); --panel-solid:#171c16; --ink:#eef2ea; --muted:#a3ad9f;
+  --accent:#e8a33d; --accent-ink:#1d1405; --line:#2f382d; --actual:#7fc46b; --radius:12px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+h1,h2,.display{font-family:"Barlow Condensed",Inter,sans-serif;letter-spacing:.02em;margin:0;font-weight:700}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:.75rem 1.25rem;font-weight:600}
+.btn-primary{background:var(--accent);color:var(--accent-ink)}
+.btn-primary:disabled{background:#3d433a;color:#858c82;cursor:not-allowed}
+.btn-ghost{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
+.screen{position:fixed;inset:0;display:none}
+.screen.active{display:flex}
+
+/* Start */
+#start{align-items:center;justify-content:center;padding:16px;
+  background:radial-gradient(1200px 600px at 70% 20%,#26301f 0%,var(--bg) 60%)}
+.card{background:var(--panel-solid);border:1px solid var(--line);border-radius:16px;padding:28px;max-width:440px;width:100%}
+.card h1{font-size:3rem;line-height:1}
+.card h1 span{color:var(--accent)}
+.card p{color:var(--muted);line-height:1.5;margin:.75rem 0 1.5rem}
+.card .rules{font-size:.9rem;color:var(--muted);border-top:1px solid var(--line);padding-top:1rem;margin-top:1.5rem}
+.card button{width:100%;font-size:1.05rem}
+.error{color:#f0a48f;font-size:.9rem;margin-top:1rem;display:none}
+.error.show{display:block}
+
+/* Game */
+#pano{position:absolute;inset:0;background:#000}
+#hud{position:absolute;top:12px;left:12px;z-index:5;display:flex;gap:8px;flex-wrap:wrap}
+.chip{background:var(--panel);padding:.5rem .8rem;border-radius:10px;font-weight:600;font-size:.9rem;border:1px solid var(--line);backdrop-filter:blur(6px)}
+.chip b{color:var(--accent)}
+#guess-wrap{position:absolute;right:12px;bottom:24px;z-index:5;width:320px;display:flex;flex-direction:column;gap:8px;transition:width .2s ease}
+#guess-wrap:hover{width:min(580px,calc(100vw - 24px))}
+#guess-map{height:220px;border-radius:var(--radius);border:2px solid var(--line);transition:height .2s ease;cursor:crosshair}
+#guess-wrap:hover #guess-map{height:min(420px,60vh)}
+#guess-btn{width:100%}
+#reset-btn{position:absolute;left:12px;bottom:24px;z-index:5}
+@media (max-width:700px){
+  #pano{bottom:45vh}
+  #guess-wrap,#guess-wrap:hover{left:0;right:0;bottom:0;width:100%;padding:8px 8px calc(8px + env(safe-area-inset-bottom));background:var(--panel-solid);border-top:1px solid var(--line)}
+  #guess-map,#guess-wrap:hover #guess-map{height:calc(45vh - 76px)}
+  #reset-btn{bottom:calc(45vh + 12px)}
+}
+
+/* Loading */
+#loading{position:fixed;inset:0;z-index:50;background:rgba(10,13,9,.85);display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;color:var(--muted)}
+#loading.active{display:flex}
+.spinner{width:36px;height:36px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--accent);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Result + final */
+#result,#final{flex-direction:column}
+#result-map,#final-map{flex:1;min-height:0}
+.result-bar{background:var(--panel-solid);border-top:1px solid var(--line);padding:16px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;justify-content:center}
+.stat{text-align:center;min-width:110px}
+.stat .display{font-size:2.2rem;line-height:1}
+.stat small{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}
+.bar{width:min(420px,90vw);height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .6s ease}
+.rounds{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;font-size:.85rem}
+.rounds span{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:.35rem .6rem;color:var(--muted)}
+.rounds span b{color:var(--ink)}
+.legend{display:flex;gap:14px;font-size:.8rem;color:var(--muted)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.leaflet-container{background:#1b2119;font-family:Inter,system-ui,sans-serif}
+</style>
+</head>
+<body>
+
+<section id="start" class="screen active">
+  <div class="card">
+    <h1>Agassiz<span>Guesser</span></h1>
+    <p>You're dropped somewhere in the District. Look around, then drop a pin where you think you are.</p>
+    <button id="play-btn" class="btn-primary" disabled>Loading…</button>
+    <div id="start-error" class="error"></div>
+    <div class="rules" id="rules"></div>
+  </div>
+</section>
+
+<section id="game" class="screen">
+  <div id="pano"></div>
+  <div id="hud">
+    <div class="chip">Round <b id="hud-round">1</b> / <span id="hud-rounds">5</span></div>
+    <div class="chip">Score <b id="hud-score">0</b></div>
+  </div>
+  <button id="reset-btn" class="btn-ghost" title="Return to where you started">↺ Start point</button>
+  <div id="guess-wrap">
+    <div id="guess-map"></div>
+    <button id="guess-btn" class="btn-primary" disabled>Place a pin on the map</button>
+  </div>
+</section>
+
+<section id="result" class="screen">
+  <div id="result-map"></div>
+  <div class="result-bar">
+    <div class="stat"><div class="display" id="res-dist">–</div><small>Distance</small></div>
+    <div class="stat"><div class="display" id="res-points">–</div><small>Points</small></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px">
+      <div class="bar"><i id="res-bar"></i></div>
+      <div class="legend"><span><i class="dot" style="background:var(--accent)"></i>Your guess</span><span><i class="dot" style="background:var(--actual)"></i>Actual</span></div>
+    </div>
+    <button id="next-btn" class="btn-primary">Next round</button>
+  </div>
+</section>
+
+<section id="final" class="screen">
+  <div id="final-map"></div>
+  <div class="result-bar">
+    <div class="stat"><div class="display" id="final-total">0</div><small id="final-max">of 25,000</small></div>
+    <div class="rounds" id="final-rounds"></div>
+    <button id="again-btn" class="btn-primary">Play again</button>
+  </div>
+</section>
+
+<div id="loading"><div class="spinner"></div><div id="loading-msg">Finding a location…</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+/* ================== CONFIG ================== */
+const CONFIG = {
+  API_KEY: "PASTE_YOUR_KEY_HERE",   // Google Maps JavaScript API key
+  ROUNDS: 5,
+  ALLOW_MOVE: true,                 // false = no moving (look around only)
+  MAX_POINTS: 5000,                 // per round
+  PERFECT_RADIUS_M: 25,             // within this = full points
+  SNAP_RADIUS_M: 300,               // how far from a random point to search for Street View
+  MIN_SPACING_M: 800,               // rounds in one game must be at least this far apart
+  MAX_TRIES: 80,
+  // PLACEHOLDER play area: a rough box around the Agassiz valley floor.
+  // Replace with the District of Kent boundary as [lat, lng] pairs.
+  AREA: [
+    [49.285, -121.860],
+    [49.285, -121.700],
+    [49.215, -121.700],
+    [49.215, -121.860]
+  ]
+};
+
+/* ================== GEO HELPERS ================== */
+const toRad = d => d * Math.PI / 180;
+function distM(a, b){
+  const R = 6371000, dLat = toRad(b[0]-a[0]), dLng = toRad(b[1]-a[1]);
+  const h = Math.sin(dLat/2)**2 + Math.cos(toRad(a[0]))*Math.cos(toRad(b[0]))*Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function inPolygon(pt, poly){
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
+    const [yi, xi] = poly[i], [yj, xj] = poly[j];
+    if ((yi > pt[0]) !== (yj > pt[0]) && pt[1] < (xj - xi) * (pt[0] - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+const lats = CONFIG.AREA.map(p => p[0]), lngs = CONFIG.AREA.map(p => p[1]);
+const BBOX = { s: Math.min(...lats), n: Math.max(...lats), w: Math.min(...lngs), e: Math.max(...lngs) };
+const DIAG_M = distM([BBOX.s, BBOX.w], [BBOX.n, BBOX.e]);
+function randomPoint(){
+  for (let i = 0; i < 1000; i++){
+    const p = [BBOX.s + Math.random()*(BBOX.n-BBOX.s), BBOX.w + Math.random()*(BBOX.e-BBOX.w)];
+    if (inPolygon(p, CONFIG.AREA)) return p;
+  }
+  throw new Error("Play area polygon looks invalid.");
+}
+function scoreFor(d){
+  if (d <= CONFIG.PERFECT_RADIUS_M) return CONFIG.MAX_POINTS;
+  return Math.round(CONFIG.MAX_POINTS * Math.exp(-10 * d / DIAG_M));
+}
+const fmtDist = d => d < 1000 ? `${Math.round(d)} m` : `${(d/1000).toFixed(d < 10000 ? 2 : 1)} km`;
+const fmtNum = n => n.toLocaleString("en-CA");
+
+/* ================== UI HELPERS ================== */
+const $ = id => document.getElementById(id);
+function show(id){ document.querySelectorAll(".screen").forEach(s => s.classList.toggle("active", s.id === id)); }
+function loading(on, msg){ $("loading").classList.toggle("active", on); if (msg) $("loading-msg").textContent = msg; }
+function startError(msg){ const e = $("start-error"); e.textContent = msg; e.classList.add("show"); $("play-btn").disabled = true; $("play-btn").textContent = "Unavailable"; }
+
+$("rules").innerHTML = `${CONFIG.ROUNDS} rounds · up to ${fmtNum(CONFIG.MAX_POINTS)} points each · ${CONFIG.ALLOW_MOVE ? "moving allowed" : "no moving"}`;
+$("hud-rounds").textContent = CONFIG.ROUNDS;
+$("final-max").textContent = `of ${fmtNum(CONFIG.ROUNDS * CONFIG.MAX_POINTS)}`;
+
+/* ================== GOOGLE LOADER ================== */
+let SV = null, svService = null, pano = null;
+window.gm_authFailure = () => {
+  loading(false); show("start");
+  startError("Google rejected the API key. Check that the Maps JavaScript API is enabled, billing is on, and this site is allowed in the key's restrictions.");
+};
+window.initGoogle = async () => {
+  try {
+    SV = await google.maps.importLibrary("streetView");
+    svService = new SV.StreetViewService();
+    $("play-btn").disabled = false;
+    $("play-btn").textContent = "Play";
+  } catch (e) { startError("Google Maps loaded but Street View didn't. Try reloading."); }
+};
+(function loadGoogle(){
+  if (!CONFIG.API_KEY || CONFIG.API_KEY.startsWith("PASTE")){
+    startError("No API key yet. Add your Google Maps API key to CONFIG at the top of this file.");
+    return;
+  }
+  const s = document.createElement("script");
+  s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(CONFIG.API_KEY)}&v=weekly&loading=async&callback=initGoogle`;
+  s.async = true;
+  s.onerror = () => startError("Couldn't reach Google Maps. Check your connection.");
+  document.head.appendChild(s);
+})();
+
+/* ================== LEAFLET MAPS ================== */
+const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const TILE_OPTS = { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" };
+const areaBounds = L.latLngBounds(CONFIG.AREA);
+const areaStyle = { color: "#e8a33d", weight: 1.5, dashArray: "4 6", fill: false, interactive: false };
+function makeMap(id){
+  const m = L.map(id, { zoomControl: true });
+  L.tileLayer(TILE_URL, TILE_OPTS).addTo(m);
+  L.polygon(CONFIG.AREA, areaStyle).addTo(m);
+  m.fitBounds(areaBounds, { padding: [10, 10] });
+  return m;
+}
+const guessMap = makeMap("guess-map");
+const resultMap = makeMap("result-map");
+const finalMap = makeMap("final-map");
+const resultLayer = L.layerGroup().addTo(resultMap);
+const finalLayer = L.layerGroup().addTo(finalMap);
+let guessMarker = null;
+
+const pin = color => ({ radius: 8, color: "#10140f", weight: 2, fillColor: color, fillOpacity: 1 });
+const GUESS_COLOR = "#e8a33d", ACTUAL_COLOR = "#7fc46b";
+
+guessMap.on("click", e => {
+  const ll = [e.latlng.lat, e.latlng.lng];
+  if (guessMarker) guessMarker.setLatLng(ll);
+  else guessMarker = L.circleMarker(ll, pin(GUESS_COLOR)).addTo(guessMap);
+  $("guess-btn").disabled = false;
+  $("guess-btn").textContent = "Guess";
+});
+// keep Leaflet sized correctly as the guess panel grows/shrinks
+$("guess-map").addEventListener("transitionend", () => guessMap.invalidateSize());
+window.addEventListener("resize", () => { guessMap.invalidateSize(); resultMap.invalidateSize(); finalMap.invalidateSize(); });
+
+/* ================== GAME STATE ================== */
+let round = 0, rounds = [];   // rounds: {panoId, actual:[lat,lng], guess, dist, points}
+
+async function findLocation(){
+  const sources = [SV.StreetViewSource.GOOGLE || SV.StreetViewSource.OUTDOOR];
+  for (let i = 0; i < CONFIG.MAX_TRIES; i++){
+    const p = randomPoint();
+    try {
+      const { data } = await svService.getPanorama({
+        location: { lat: p[0], lng: p[1] },
+        radius: CONFIG.SNAP_RADIUS_M,
+        sources,
+        preference: SV.StreetViewPreference.NEAREST
+      });
+      const ll = data.location.latLng, actual = [ll.lat(), ll.lng()];
+      if (!inPolygon(actual, CONFIG.AREA)) continue;
+      if (rounds.some(r => distM(r.actual, actual) < CONFIG.MIN_SPACING_M)) continue;
+      return { panoId: data.location.pano, actual };
+    } catch (e) { /* no Street View near this point — try again */ }
+  }
+  throw new Error("Couldn't find Street View coverage in the play area.");
+}
+
+function ensurePano(){
+  if (pano) return;
+  pano = new SV.StreetViewPanorama($("pano"), {
+    addressControl: false, showRoadLabels: false, fullscreenControl: false,
+    motionTracking: false, motionTrackingControl: false, enableCloseButton: false,
+    imageDateControl: false, panControl: true, zoomControl: true,
+    linksControl: CONFIG.ALLOW_MOVE, clickToGo: CONFIG.ALLOW_MOVE, keyboardShortcuts: CONFIG.ALLOW_MOVE
+  });
+}
+
+function setView(r){
+  pano.setPano(r.panoId);
+  pano.setPov({ heading: r.heading, pitch: 0 });
+  pano.setZoom(0);
+}
+
+async function startRound(){
+  loading(true, "Finding a location…");
+  try {
+    const loc = await findLocation();
+    const r = { ...loc, heading: Math.random() * 360 };
+    rounds.push(r);
+    show("game");
+    ensurePano();
+    setView(r);
+    $("hud-round").textContent = round + 1;
+    $("hud-score").textContent = fmtNum(rounds.reduce((s, x) => s + (x.points || 0), 0));
+    if (guessMarker){ guessMap.removeLayer(guessMarker); guessMarker = null; }
+    $("guess-btn").disabled = true;
+    $("guess-btn").textContent = "Place a pin on the map";
+    guessMap.invalidateSize();
+    guessMap.fitBounds(areaBounds, { padding: [10, 10] });
+  } catch (e) {
+    show("start"); startError(e.message);
+  } finally { loading(false); }
+}
+
+function submitGuess(){
+  if (!guessMarker) return;
+  const r = rounds[round];
+  const g = guessMarker.getLatLng();
+  r.guess = [g.lat, g.lng];
+  r.dist = distM(r.guess, r.actual);
+  r.points = scoreFor(r.dist);
+
+  show("result");
+  resultMap.invalidateSize();
+  resultLayer.clearLayers();
+  L.polyline([r.guess, r.actual], { color: "#eef2ea", weight: 2, dashArray: "6 6" }).addTo(resultLayer);
+  L.circleMarker(r.guess, pin(GUESS_COLOR)).addTo(resultLayer);
+  L.circleMarker(r.actual, pin(ACTUAL_COLOR)).addTo(resultLayer);
+  resultMap.fitBounds(L.latLngBounds([r.guess, r.actual]), { padding: [60, 60], maxZoom: 17 });
+
+  $("res-dist").textContent = fmtDist(r.dist);
+  $("res-points").textContent = fmtNum(r.points);
+  $("res-bar").style.width = "0";
+  requestAnimationFrame(() => requestAnimationFrame(() => $("res-bar").style.width = `${100 * r.points / CONFIG.MAX_POINTS}%`));
+  $("next-btn").textContent = round + 1 >= CONFIG.ROUNDS ? "See results" : "Next round";
+}
+
+function nextRound(){
+  round++;
+  if (round >= CONFIG.ROUNDS) return showFinal();
+  startRound();
+}
+
+function showFinal(){
+  show("final");
+  finalMap.invalidateSize();
+  finalLayer.clearLayers();
+  const pts = [];
+  rounds.forEach((r, i) => {
+    L.polyline([r.guess, r.actual], { color: "#eef2ea", weight: 1.5, dashArray: "4 6" }).addTo(finalLayer);
+    L.circleMarker(r.guess, pin(GUESS_COLOR)).bindTooltip(`Round ${i+1} guess`).addTo(finalLayer);
+    L.circleMarker(r.actual, pin(ACTUAL_COLOR)).bindTooltip(`Round ${i+1}: ${fmtDist(r.dist)}, ${fmtNum(r.points)} pts`).addTo(finalLayer);
+    pts.push(r.guess, r.actual);
+  });
+  finalMap.fitBounds(L.latLngBounds(pts), { padding: [50, 50], maxZoom: 16 });
+  const total = rounds.reduce((s, r) => s + r.points, 0);
+  $("final-total").textContent = fmtNum(total);
+  $("final-rounds").innerHTML = rounds.map((r, i) => `<span>R${i+1} <b>${fmtNum(r.points)}</b> · ${fmtDist(r.dist)}</span>`).join("");
+}
+
+function newGame(){
+  round = 0; rounds = [];
+  startRound();
+}
+
+$("play-btn").addEventListener("click", newGame);
+$("guess-btn").addEventListener("click", submitGuess);
+$("next-btn").addEventListener("click", nextRound);
+$("again-btn").addEventListener("click", newGame);
+$("reset-btn").addEventListener("click", () => rounds[round] && setView(rounds[round]));
+if (!CONFIG.ALLOW_MOVE) $("reset-btn").style.display = "none";
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && $("game").classList.contains("active") && guessMarker){ e.preventDefault(); submitGuess(); }
+});
+</script>
+</body>
+</html>
